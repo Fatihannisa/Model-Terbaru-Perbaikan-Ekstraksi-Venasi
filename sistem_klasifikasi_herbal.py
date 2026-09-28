@@ -2,6 +2,7 @@ import streamlit as st
 import numpy as np
 from PIL import Image
 import tensorflow as tf
+from skimage.filters import frangi
 import streamlit.components.v1 as components
 import base64
 import cv2
@@ -400,40 +401,60 @@ def to_rgb_input(img: np.ndarray) -> np.ndarray:
 def to_vein_input(img: np.ndarray) -> np.ndarray:
   EDGE_KERNEL_SIZE = (3, 3)
   EDGE_WEIGHT = 0.50
-  img = cv2.resize(img, CONFIG["IMG_SIZE"], interpolation=cv2.INTER_CUBIC)
+  FRANGI_SCALES = np.arange(1, 4, 0.5)
+  FRANGI_BETA = 0.5
+  FRANGI_GAMMA = 0.06
+  VESSEL_THRESHOLD = 12
+  OPEN_KERNEL_SIZE = (2, 2)
+
+  img = cv2.resize(
+      img,
+      CONFIG["IMG_SIZE"],
+      interpolation=cv2.INTER_CUBIC
+  )
   if img.dtype != np.uint8:
-      if img.max() <= 1.0:
-          img = img * 255.0
-      img = np.clip(img, 0, 255).astype(np.uint8)
+    if img.max() <= 1.0:
+      img = img * 255.0
+    img = np.clip(img, 0, 255).astype(np.uint8)
   mask = get_leaf_mask(img)
-  mask_binary = ( mask > 0).astype(np.uint8)
-  gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-  gray = cv2.bitwise_and(gray, gray, mask=mask)
-  gray = cv2.GaussianBlur(gray, (3, 3), 0)
-  clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
-  vein = clahe.apply(gray)
-  vein = cv2.bilateralFilter(vein, d=7, sigmaColor=50, sigmaSpace=50)
-  blur_large = cv2.GaussianBlur(vein, (21, 21), 0)
-  highpass = cv2.subtract(vein, (blur_large * 0.7).astype(np.uint8))
-  sobelx = cv2.Sobel(highpass, cv2.CV_32F, 1, 0, ksize=3)
-  sobely = cv2.Sobel(highpass, cv2.CV_32F, 0, 1, ksize=3)
-  sobel = cv2.magnitude(sobelx, sobely)
-  sobel = cv2.normalize(sobel, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-  vein = cv2.addWeighted(highpass, 0.20, sobel, 0.80, 0)
-  vein = cv2.normalize(vein, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-  _, vein = cv2.threshold(vein, 13, 255, cv2.THRESH_TOZERO)
-  edge_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, EDGE_KERNEL_SIZE)
+  mask_binary = (mask > 0).astype(np.uint8)
+  _, g, _ = cv2.split(img)
+  gray = cv2.bitwise_and(g, g, mask=mask)
+  gray = cv2.fastNlMeansDenoising(
+      gray,
+      h=10,
+      templateWindowSize=7,
+      searchWindowSize=21
+  )
+  gray_f = gray.astype(np.float64) / 255.0
+  vesselness = frangi(
+      gray_f,
+      sigmas=FRANGI_SCALES,
+      beta=FRANGI_BETA,
+      gamma=FRANGI_GAMMA,
+      black_ridges=True  # vena umumnya lebih gelap dari jaringan sekitar
+  )
+  vesselness = cv2.normalize(
+      vesselness, None, 0, 255, cv2.NORM_MINMAX
+  ).astype(np.uint8)
+  _, vein = cv2.threshold(
+      vesselness, VESSEL_THRESHOLD, 255, cv2.THRESH_TOZERO
+  )
+  open_kernel = cv2.getStructuringElement(
+      cv2.MORPH_ELLIPSE, OPEN_KERNEL_SIZE
+  )
+  vein = cv2.morphologyEx(vein, cv2.MORPH_OPEN, open_kernel)
+  edge_kernel = cv2.getStructuringElement(
+      cv2.MORPH_ELLIPSE, EDGE_KERNEL_SIZE
+  )
   leaf_edge = cv2.morphologyEx(mask, cv2.MORPH_GRADIENT, edge_kernel)
   leaf_edge = cv2.dilate(leaf_edge, edge_kernel, iterations=1)
-  leaf_edge_float = (leaf_edge.astype(np.float32) * EDGE_WEIGHT)
+  leaf_edge_float = leaf_edge.astype(np.float32) * EDGE_WEIGHT
   vein = np.maximum(vein.astype(np.float32), leaf_edge_float)
   vein = np.clip(vein, 0, 255).astype(np.uint8)
   vein[mask_binary == 0] = 0
-  vein = (vein.astype(np.float32) / 255.0)
-  vein = np.stack(
-      [vein, vein, vein],
-      axis=-1
-  )
+  vein = vein.astype(np.float32) / 255.0
+  vein = np.stack([vein, vein, vein], axis=-1)
   return vein.astype(np.float32)
 
 def predict(image):
