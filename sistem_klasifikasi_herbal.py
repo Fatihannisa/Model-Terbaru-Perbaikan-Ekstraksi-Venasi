@@ -329,23 +329,32 @@ def _sharpen_veins(img):
     return np.clip(sharp, 0, 255).astype(np.uint8)
     
 def get_leaf_mask(img):
-    work = img.copy()
-    hsv = cv2.cvtColor(work, cv2.COLOR_BGR2HSV)
-    lower = np.array([20, 20, 20])
-    upper = np.array([95, 255, 255])
-    mask = cv2.inRange(hsv, lower, upper)
-    kernel = np.ones((5, 5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    clean_mask = np.zeros_like(mask)
-    if len(contours) > 0:
-        largest = max(contours, key=cv2.contourArea)
-        cv2.drawContours(clean_mask, [largest], -1, 255, -1)
-    clean_mask = cv2.GaussianBlur(clean_mask, (7, 7), 0)
-    _, clean_mask = cv2.threshold(clean_mask, 127, 255, cv2.THRESH_BINARY)
-    return clean_mask
+  gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+  _, mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
 
+  contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+  if len(contours) > 0:
+    largest = max(contours, key=cv2.contourArea)
+    clean_mask = np.zeros_like(mask)
+    cv2.drawContours(clean_mask, [largest], -1, 255, -1)
+    mask = clean_mask
+
+  kernel = np.ones((5,5), np.uint8)
+  mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+  return mask
+
+def resize_input_image(img, size=(512, 512)):
+    """
+    Resize gambar input user menjadi 512x512 piksel
+    sebelum masuk ke tahap preprocessing.
+    """
+    return cv2.resize(
+        img,
+        size,
+        interpolation=cv2.INTER_AREA
+    )
+    
 def preprocess_camera_leaf(img):
     try:
         _, buffer = cv2.imencode(".png", img)
@@ -460,9 +469,14 @@ def to_vein_input(img: np.ndarray) -> np.ndarray:
 def predict(image):
     img = np.array(image.convert("RGB"))
     img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    img_bgr = resize_input_image(img_bgr, (512, 512))
     processed = preprocess_camera_leaf(img_bgr)
-    rgb_input = np.expand_dims(to_rgb_input(processed), 0).astype(np.float32)
-    vein_input = np.expand_dims(to_vein_input(processed), 0).astype(np.float32)
+    rgb_input = np.expand_dims(
+        to_rgb_input(processed), 0
+    ).astype(np.float32)
+    vein_input = np.expand_dims(
+        to_vein_input(processed), 0
+    ).astype(np.float32)
 
     if interpreter is not None:
         input_details = interpreter.get_input_details()
